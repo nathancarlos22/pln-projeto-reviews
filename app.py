@@ -16,42 +16,40 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 from keras.models import model_from_json
 
-import warnings
-from IPython.display import clear_output
-
 import nltk
 import spacy.cli
+
+nltk.download('stopwords')
+spacy.cli.download("en_core_web_sm")
+
 from nltk.corpus import stopwords
 import en_core_web_sm
 
-nltk.download('stopwords')
 stopwords_en = stopwords.words("english")
-spacy.cli.download("en_core_web_sm")
 spc_en = en_core_web_sm.load()
 
-
-warnings.filterwarnings("ignore")
-
-
-# %%
 import gradio as gr
 
-# %%
+from transformers import pipeline
+classifier_sentiment = pipeline("text-classification", model="j-hartmann/emotion-english-distilroberta-base", return_all_scores=True)
+
 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36', 'Accept-Language':'pt-BR,pt;q=0.9,en;q=0.8'}
 s = requests.Session()
 
-# %%
 with gr.Blocks() as demo:
         
     input = gr.Textbox(label="Nome do produto")
 
-    # reviews = []
-    # produtos = []
     product = ""
     btn_pesq = gr.Button("Pesquisar")
     
     output = gr.outputs.Textbox(label="console")
+    label_out = gr.outputs.Label(label="sentiment")
+    label_out2 = gr.outputs.Label(label="frequency", num_top_classes=10)
+
     state = gr.State(value=product)
+
+    array_dict = []
 
     def produto(input, stats):
         reviews = []
@@ -94,7 +92,7 @@ with gr.Blocks() as demo:
                 
                 stats += f"Analisando produto {produtos[cont]}\n"
                 stats += a_soupi[0].text.replace('\n', '').replace('  ', '') + '\n' + '\n'
-                yield stats, stats
+                yield {}, {}, stats, stats
                 
                 cont+=1 
                 
@@ -124,7 +122,7 @@ with gr.Blocks() as demo:
             
             except Exception as e:
                 stats += e
-                yield stats, stats
+                yield {}, {}, stats, stats
                 continue
 
              
@@ -139,7 +137,7 @@ with gr.Blocks() as demo:
         for c in coments:
             stats=''
             stats+=f'Detectando comentários em inglês\n'
-            yield stats, stats
+            yield {}, {}, stats, stats
             try:
                 det = detect(c)
                 if det != 'en' or 'The media could not be loaded.' in c:
@@ -151,24 +149,23 @@ with gr.Blocks() as demo:
                 continue
             
             stats+=f'{cont1} de {len(coments)} comentários\n'
-            yield stats, stats
+            yield {}, {}, stats, stats
         
         stats=''
         stats+=f'{len(coments_translate)} comentários válidos\n'
-        yield stats, stats
+        yield {}, {}, stats, stats
         time.sleep(1)
 
 
-
-            
-
-        
-        
         
         ## Analisando modelo
         
 
-        
+        nltk.download('stopwords')
+        stopwords_en = stopwords.words("english")
+
+        spacy.cli.download("en_core_web_sm")
+        spc_en = en_core_web_sm.load()
 
 
         def limpa_texto(texto):
@@ -187,8 +184,6 @@ with gr.Blocks() as demo:
             
             return " ".join(tokens)
 
-
-
         try:
             df_alexa = pd.read_csv('df_preprocessed.csv')
             df_alexa.dropna(inplace=True)
@@ -196,7 +191,7 @@ with gr.Blocks() as demo:
         except:
             stats=''
             stats+='Dataset preprocessado nao encontrado, criando novo dataset...\n'
-            yield stats, stats
+            yield {}, {}, stats, stats
 
             try:
                 df = pd.read_csv('Datafiniti_Amazon_Consumer_Reviews_of_Amazon_Products_May19.csv')
@@ -233,7 +228,7 @@ with gr.Blocks() as demo:
                 
                 stats=''
                 stats+=e + '\n'
-                yield stats, stats
+                yield {}, {}, stats, stats
                 exit()
             
 
@@ -262,7 +257,7 @@ with gr.Blocks() as demo:
             classifier.load_weights("model.h5")
             stats=''
             stats+='Modelo carregado com sucesso\n'
-            yield stats, stats
+            yield {}, {}, stats, stats
 
             # evaluate loaded model on test data
             classifier.compile(optimizer='Adam', loss='binary_crossentropy', metrics = ['accuracy'])
@@ -279,7 +274,7 @@ with gr.Blocks() as demo:
             epochs_hist = classifier.fit(X_train, y_train, epochs=100, batch_size=50,  verbose=2, validation_split=0.2)
             stats=''
             stats+='Modelo criado com sucesso\n'
-            yield stats, stats
+            yield {}, {}, stats, stats
 
 
             # serialize model to JSON
@@ -289,15 +284,21 @@ with gr.Blocks() as demo:
             # serialize weights to HDF5
             classifier.save_weights("model.h5")
             stats+='Salvo modelo em disco\n'
-            yield stats, stats
+            yield {}, {}, stats, stats
 
 
         if len(coments_translate) == 0:
             stats=''
             stats+='Nenhum comentário para ser classificado\n'
-            yield stats, stats
+            yield {}, {}, stats, stats
         else:
-            c = tfidf_vect.transform(coments_translate).toarray()
+            text = []
+            for t in coments_translate:
+                texto = limpa_texto(t)
+                    
+                text.append(texto)
+            # c = tfidf_vect.transform(coments_translate).toarray()
+            c = tfidf_vect.transform(text).toarray()
             predict = (classifier.predict(c) > 0.5).astype(int)
 
             cont_pos = 0
@@ -310,31 +311,90 @@ with gr.Blocks() as demo:
 
             stats=''
             stats+=f'Positivos: {cont_pos} | Negativos: {cont_neg}\n'
-            yield stats, stats
+            yield {}, {}, stats, stats
 
             indexes_neg = np.where(predict == 0)[0] # obtendo indexes dos comentarios negativos
 
             if len(indexes_neg) == 0:
                 stats+='Nenhum comentario negativo encontrado\n'
-                yield stats, stats
+                yield {}, {}, stats, stats
 
             else:
                 stats+='Comentarios negativos traduzidos para portugues:\n\n'
-                yield stats, stats
-                for i in indexes_neg:
-                    stats+=ts.google(coments_translate[i], to_language='pt') + '\n\n'
-                    yield stats, stats
+                yield {}, {}, stats, stats
+                
+                # text = []
+                # for t in coments_translate:
+                #     texto = limpa_texto(t)
+                        
+                #     text.append(texto)
 
+                for i in indexes_neg:
+
+                    comentario_class = classifier_sentiment(text[i])[0]
+
+                    new_dict = {}
+                    for d in comentario_class:
+                        new_dict[d['label']] = d['score']
+                    
+                    array_dict.append(new_dict)
+                    
+                    # somando os scores de cada label
+                    dict_soma = {}
+                    t = len(array_dict)
+
+                    for a in array_dict:
+                        for key, value in a.items():
+                            # print(key, value)
+                            if key not in dict_soma:
+                                dict_soma[key] = value
+                            
+                            else:
+                                dict_soma[key] += value
+
+                    for key, value in dict_soma.items():
+                        dict_soma[key] = value/t
+                    
+
+
+                    # frequencia de palavras
+                    
+                    word2count = {}
+                    for data in text:
+                        words = nltk.word_tokenize(data)
+                        for word in words:
+                            if word not in word2count.keys():
+                                word2count[word] = 1
+                            else:
+                                word2count[word] += 1
+                    
+                    soma_freq =  (sum(word2count.values()))
+                    for keys, values in word2count.items():
+                        word2count[keys] = values/soma_freq
+                    
+                    stats+=ts.google(coments_translate[i], to_language='pt') + '\n\n'
+                    yield word2count, dict_soma, stats, stats
 
         
     
-    btn_pesq.click(produto, [input, state], [state, output])        
+    def sentiment(input):
+      t = len(input)
+
+      new_dict = {}
+      if t !=0:
+
+        soma_score = 0
+        for d in input[t-1]:
+          soma_score += d['score']
+          new_dict[d['label']] = soma_score/t
+      
+      return new_dict
+
+    btn_pesq.click(produto, [input, state], [label_out2, label_out, state, output])   
 
 demo.queue()
 
 demo.launch(share=False)
-
-# %%
 
 
 
